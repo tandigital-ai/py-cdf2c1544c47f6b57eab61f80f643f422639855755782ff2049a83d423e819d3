@@ -1,0 +1,1179 @@
+# -*- coding: utf-8 -*-
+"""
+app.py - TAX INVOICE PRO v1.2.0
+Ung dung desktop tra cuu - luu tru - xem - xuat hoa don dien tu, chay offline.
+Chuan du lieu: Nghi dinh 254/2026/ND-CP va Thong tu 91/2026/TT-BTC.
+Tac gia: TDA - 0986509106
+"""
+
+import calendar
+import os
+import sys
+import traceback
+from datetime import date, datetime
+from tkinter import filedialog, ttk
+
+import customtkinter as ctk
+
+import exporter
+import importer
+import invoice_view
+import kho
+import man_hinh_phu
+import tt91
+import tkinter as _tkbase  # va loi bind_all cua customtkinter
+
+ctk.set_appearance_mode("light")
+ctk.set_default_color_theme("blue")
+log = kho.log
+
+
+# ======================================================================
+# Hop thoai chung
+# ======================================================================
+class HopThoai(ctk.CTkToplevel):
+    def __init__(self, cha, tieu_de, noi_dung, nut=("Đóng",), rong=520, cao=260,
+                 mau_chinh=None):
+        super().__init__(cha)
+        self.ket_qua = None
+        self.title(tieu_de)
+        self.geometry("%dx%d" % (rong, cao))
+        self.resizable(False, False)
+        self.configure(fg_color=kho.MAU_TRANG)
+        ctk.CTkLabel(self, text=tieu_de,
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=mau_chinh or kho.MAU_XANH_DAM,
+                     anchor="w").pack(fill="x", padx=20, pady=(16, 6))
+        khung = ctk.CTkScrollableFrame(self, fg_color="#FAFCFF",
+                                       border_width=1,
+                                       border_color=kho.MAU_VIEN)
+        khung.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        ctk.CTkLabel(khung, text=noi_dung, justify="left", anchor="w",
+                     wraplength=rong - 80, font=ctk.CTkFont(size=12),
+                     text_color=kho.MAU_CHU).pack(fill="x", padx=6, pady=6)
+        t = ctk.CTkFrame(self, fg_color="transparent")
+        t.pack(fill="x", padx=20, pady=(0, 14))
+        for i, nhan in enumerate(reversed(nut)):
+            mau = (mau_chinh or kho.MAU_XANH) if i == 0 else "#6B7A8C"
+            ctk.CTkButton(t, text=nhan, width=130, height=34, fg_color=mau,
+                          font=ctk.CTkFont(size=12, weight="bold"),
+                          command=lambda n=nhan: self._chon(n)
+                          ).pack(side="right", padx=5)
+        self.after(120, self.lift)
+        self.after(140, self.grab_set)
+        self.protocol("WM_DELETE_WINDOW", lambda: self._chon(None))
+
+    def _chon(self, nhan):
+        self.ket_qua = nhan
+        self.grab_release()
+        self.destroy()
+
+
+class HopXacNhanXoa(ctk.CTkToplevel):
+    def __init__(self, cha, so_luong, mo_ta):
+        super().__init__(cha)
+        self.ket_qua = None
+        self.title("Xác nhận xóa")
+        self.geometry("560x330")
+        self.resizable(False, False)
+        self.configure(fg_color=kho.MAU_TRANG)
+        ctk.CTkLabel(self, text="Xóa %d hóa đơn khỏi kho dữ liệu?" % so_luong,
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=kho.MAU_DO, anchor="w").pack(fill="x", padx=22,
+                                                             pady=(18, 8))
+        o = ctk.CTkTextbox(self, height=130, fg_color="#FFF6F6",
+                           border_width=1, border_color="#F0C8C8",
+                           font=ctk.CTkFont(size=12))
+        o.pack(fill="x", padx=22)
+        o.insert("1.0", mo_ta)
+        o.configure(state="disabled")
+        self.b_tep = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(self, variable=self.b_tep,
+                        text="Xóa luôn tệp XML đã lưu trong thư mục lưu trữ",
+                        font=ctk.CTkFont(size=12),
+                        text_color=kho.MAU_CHU).pack(anchor="w", padx=24,
+                                                     pady=(12, 2))
+        ctk.CTkLabel(self, anchor="w", justify="left", wraplength=510,
+                     font=ctk.CTkFont(size=11), text_color=kho.MAU_XAM,
+                     text="Cơ sở dữ liệu được tự động sao lưu vào data\\backup "
+                          "trước khi xóa, giữ lại 10 bản gần nhất."
+                     ).pack(fill="x", padx=24, pady=(0, 10))
+        t = ctk.CTkFrame(self, fg_color="transparent")
+        t.pack(fill="x", padx=22, pady=(0, 14))
+        ctk.CTkButton(t, text="XÓA", width=130, height=36, fg_color=kho.MAU_DO,
+                      hover_color=kho.MAU_DO_DAM,
+                      font=ctk.CTkFont(size=13, weight="bold"),
+                      command=lambda: self._xong(True)).pack(side="right")
+        ctk.CTkButton(t, text="Hủy bỏ", width=130, height=36,
+                      fg_color="#6B7A8C",
+                      command=lambda: self._xong(False)).pack(side="right",
+                                                              padx=8)
+        self.after(120, self.lift)
+        self.after(140, self.grab_set)
+        self.protocol("WM_DELETE_WINDOW", lambda: self._xong(False))
+
+    def _xong(self, dong_y):
+        self.ket_qua = (dong_y, bool(self.b_tep.get()))
+        self.grab_release()
+        self.destroy()
+
+
+class HopChonNguon(ctk.CTkToplevel):
+    def __init__(self, cha):
+        super().__init__(cha)
+        self.ket_qua = None
+        self.title("Tải hóa đơn vào phần mềm")
+        self.geometry("600x400")
+        self.resizable(False, False)
+        self.configure(fg_color=kho.MAU_TRANG)
+        ctk.CTkLabel(self, text="Chọn nguồn dữ liệu có sẵn trên máy",
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=kho.MAU_XANH_DAM, anchor="w"
+                     ).pack(fill="x", padx=22, pady=(18, 4))
+        ctk.CTkLabel(self, anchor="w", justify="left", wraplength=550,
+                     font=ctk.CTkFont(size=12), text_color=kho.MAU_XAM,
+                     text="Hãy đăng nhập Cổng Hóa đơn điện tử bằng trình duyệt, "
+                          "bấm Xuất XML để tải dữ liệu về máy, rồi chọn nguồn "
+                          "tương ứng dưới đây. Phần mềm không tự kết nối tới "
+                          "cơ quan thuế."
+                     ).pack(fill="x", padx=22, pady=(0, 14))
+        ds = [("zip", "Gói ZIP tải từ Cổng Thuế",
+               "Chọn tệp .zip vừa tải về, phần mềm tự giải nén và đọc mọi "
+               "tệp XML bên trong.", kho.MAU_XANH),
+              ("thu_muc", "Thư mục chứa tệp XML",
+               "Đọc các tệp .xml nằm trực tiếp trong thư mục được chọn.",
+               kho.MAU_LUC),
+              ("de_quy", "Thư mục và tất cả thư mục con",
+               "Quét sâu toàn bộ cây thư mục, phù hợp với kho lưu trữ nhiều năm.",
+               kho.MAU_XANH_DAM),
+              ("tep", "Chọn từng tệp XML",
+               "Chọn một hoặc nhiều tệp .xml cụ thể.", "#6B7A8C")]
+        for ma, ten, mo_ta, mau in ds:
+            k = ctk.CTkFrame(self, fg_color="#FAFCFF", corner_radius=8,
+                             border_width=1, border_color=kho.MAU_VIEN)
+            k.pack(fill="x", padx=22, pady=4)
+            ctk.CTkButton(k, text=ten, width=215, height=34, fg_color=mau,
+                          font=ctk.CTkFont(size=12, weight="bold"),
+                          command=lambda m=ma: self._chon(m)
+                          ).pack(side="left", padx=10, pady=10)
+            ctk.CTkLabel(k, text=mo_ta, anchor="w", justify="left",
+                         wraplength=310, font=ctk.CTkFont(size=11),
+                         text_color=kho.MAU_XAM).pack(side="left", padx=4)
+        ctk.CTkButton(self, text="Hủy bỏ", width=120, height=32,
+                      fg_color="#6B7A8C",
+                      command=lambda: self._chon(None)).pack(pady=14)
+        self.after(120, self.lift)
+        self.after(140, self.grab_set)
+        self.protocol("WM_DELETE_WINDOW", lambda: self._chon(None))
+
+    def _chon(self, ma):
+        self.ket_qua = ma
+        self.grab_release()
+        self.destroy()
+
+
+class LichChon(ctk.CTkToplevel):
+    """Lich nho de chon ngay, tra ve chuoi dd/mm/yyyy qua o nhap."""
+
+    def __init__(self, cha, o_nhap):
+        super().__init__(cha)
+        self.o = o_nhap
+        self.title("Chọn ngày")
+        self.geometry("290x300")
+        self.resizable(False, False)
+        self.configure(fg_color=kho.MAU_TRANG)
+        d = kho.parse_ngay(o_nhap.get())
+        hom_nay = date.today()
+        if d:
+            y, m, _x = (int(v) for v in d.split("-"))
+        else:
+            y, m = hom_nay.year, hom_nay.month
+        self.nam, self.thang = y, m
+        self.dau = ctk.CTkFrame(self, fg_color=kho.MAU_XANH, corner_radius=0)
+        self.dau.pack(fill="x")
+        ctk.CTkButton(self.dau, text="◀", width=34, height=30, fg_color=kho.MAU_XANH,
+                      hover_color=kho.MAU_XANH_DAM,
+                      command=lambda: self._chuyen(-1)).pack(side="left")
+        self.nhan = ctk.CTkLabel(self.dau, text="", text_color="#FFFFFF",
+                                 font=ctk.CTkFont(size=13, weight="bold"))
+        self.nhan.pack(side="left", expand=True)
+        ctk.CTkButton(self.dau, text="▶", width=34, height=30, fg_color=kho.MAU_XANH,
+                      hover_color=kho.MAU_XANH_DAM,
+                      command=lambda: self._chuyen(1)).pack(side="right")
+        self.luoi = ctk.CTkFrame(self, fg_color=kho.MAU_TRANG)
+        self.luoi.pack(fill="both", expand=True, padx=8, pady=6)
+        t = ctk.CTkFrame(self, fg_color="transparent")
+        t.pack(fill="x", padx=8, pady=(0, 8))
+        ctk.CTkButton(t, text="Hôm nay", width=100, height=30,
+                      fg_color=kho.MAU_LUC,
+                      command=self._hom_nay).pack(side="left")
+        ctk.CTkButton(t, text="Xóa ngày", width=100, height=30,
+                      fg_color="#6B7A8C", command=self._xoa).pack(side="right")
+        self._ve()
+        self.after(120, self.lift)
+        self.after(140, self.grab_set)
+
+    def _chuyen(self, b):
+        self.thang += b
+        if self.thang < 1:
+            self.thang, self.nam = 12, self.nam - 1
+        elif self.thang > 12:
+            self.thang, self.nam = 1, self.nam + 1
+        self._ve()
+
+    def _ve(self):
+        for w in self.luoi.winfo_children():
+            w.destroy()
+        self.nhan.configure(text="Tháng %02d / %d" % (self.thang, self.nam))
+        for i, t in enumerate(["T2", "T3", "T4", "T5", "T6", "T7", "CN"]):
+            ctk.CTkLabel(self.luoi, text=t, width=34,
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=kho.MAU_XAM).grid(row=0, column=i, pady=2)
+        hn = date.today()
+        for r, tuan in enumerate(calendar.monthcalendar(self.nam, self.thang), 1):
+            for c, ng in enumerate(tuan):
+                if ng == 0:
+                    continue
+                la_hn = (ng == hn.day and self.thang == hn.month
+                         and self.nam == hn.year)
+                ctk.CTkButton(
+                    self.luoi, text=str(ng), width=34, height=28,
+                    corner_radius=4,
+                    fg_color=kho.MAU_XANH if la_hn else "#EEF3F9",
+                    text_color="#FFFFFF" if la_hn else kho.MAU_CHU,
+                    hover_color="#C9DCF2",
+                    font=ctk.CTkFont(size=12),
+                    command=lambda n=ng: self._chon(n)).grid(row=r, column=c,
+                                                             padx=1, pady=1)
+
+    def _chon(self, ngay):
+        self.o.delete(0, "end")
+        self.o.insert(0, "%02d/%02d/%d" % (ngay, self.thang, self.nam))
+        self.grab_release()
+        self.destroy()
+
+    def _hom_nay(self):
+        h = date.today()
+        self.nam, self.thang = h.year, h.month
+        self._chon(h.day)
+
+    def _xoa(self):
+        self.o.delete(0, "end")
+        self.grab_release()
+        self.destroy()
+
+
+# ======================================================================
+# Man hinh tra cuu
+# ======================================================================
+class ManHinhTraCuu(ctk.CTkFrame):
+    def __init__(self, cha, app):
+        super().__init__(cha, fg_color=kho.MAU_NEN)
+        self.app = app
+        self.ds_hien = []
+        self.da_chon = set()
+        self.trang = 1
+        self.sap_xep = "ngay_lap"
+        self.giam = True
+        self.dieu_kien = {}
+        self._dung_tim_kiem()
+        self._dung_bang()
+        self._dung_the_duoi()
+        self.tra_cuu(ghi_lich_su=False)
+
+    # ---------------- khung tim kiem ----------------
+    def _dung_tim_kiem(self):
+        k = ctk.CTkFrame(self, fg_color=kho.MAU_TRANG, corner_radius=10,
+                         border_width=1, border_color=kho.MAU_VIEN)
+        k.pack(fill="x", padx=16, pady=(12, 8))
+        ctk.CTkLabel(k, text="THÔNG TIN TRA CỨU",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=kho.MAU_XANH_DAM).pack(anchor="w", padx=14,
+                                                       pady=(10, 6))
+        luoi = ctk.CTkFrame(k, fg_color="transparent")
+        luoi.pack(fill="x", padx=14)
+        for c in (1, 3, 5):
+            luoi.grid_columnconfigure(c, weight=1, uniform="o")
+        for c in (0, 2, 4):
+            luoi.grid_columnconfigure(c, weight=0)
+
+        self.o = {}
+        self._o_nhap(luoi, 0, 0, "MST người mua", "mst_nguoi_mua",
+                     "Nhập MST người mua")
+        self._o_nhap(luoi, 0, 2, "CCCD người mua", "cccd_nguoi_mua")
+        self._o_nhap(luoi, 0, 4, "Ký hiệu hóa đơn", "ky_hieu_hoa_don",
+                     "Ví dụ: C26MHM")
+        self._o_chon(luoi, 1, 0, "Trạng thái", "trang_thai", kho.DS_TRANG_THAI)
+        self._o_ngay(luoi, 1, 2, "Từ ngày", "tu_ngay")
+        self._o_ngay(luoi, 1, 4, "Đến ngày", "den_ngay")
+        self._o_nhap(luoi, 2, 0, "Số hóa đơn", "so_hoa_don")
+        self._o_nhap(luoi, 2, 2, "Ký hiệu mẫu số", "ky_hieu_mau_so",
+                     "1 … 9")
+        self._o_chon(luoi, 2, 4, "Loại hóa đơn", "loai_hoa_don",
+                     kho.DS_LOAI_HOA_DON)
+
+        self.mo_nang_cao = False
+        self.nut_nc = ctk.CTkButton(
+            k, text="▼  Nâng cao", width=120, height=26, fg_color="transparent",
+            text_color=kho.MAU_XANH, hover_color="#E8F1FC", anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"), command=self._bat_nang_cao)
+        self.nut_nc.pack(anchor="w", padx=10, pady=(8, 0))
+
+        self.khung_nc = ctk.CTkFrame(k, fg_color="transparent")
+        luoi2 = ctk.CTkFrame(self.khung_nc, fg_color="transparent")
+        luoi2.pack(fill="x", padx=14, pady=(6, 0))
+        for c in (1, 3, 5):
+            luoi2.grid_columnconfigure(c, weight=1, uniform="o")
+        self._o_nhap(luoi2, 0, 0, "Tên người bán", "ten_nguoi_ban", "", luoi2)
+        self._o_nhap(luoi2, 0, 2, "MST người bán", "mst_nguoi_ban", "", luoi2)
+        self._o_nhap(luoi2, 0, 4, "Từ khóa chung", "tu_khoa",
+                     "Tên, số hóa đơn, mã CQT", luoi2)
+        self._o_nhap(luoi2, 1, 0, "Tổng tiền từ", "tong_tu", "", luoi2)
+        self._o_nhap(luoi2, 1, 2, "Tổng tiền đến", "tong_den", "", luoi2)
+
+        t = ctk.CTkFrame(k, fg_color="transparent")
+        t.pack(fill="x", padx=14, pady=12)
+        ctk.CTkButton(t, text="🔍  TRA CỨU", width=190, height=42,
+                      fg_color=kho.MAU_XANH, hover_color=kho.MAU_XANH_DAM,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      command=self.tra_cuu).pack(side="right")
+        ctk.CTkButton(t, text="⬇  TẢI HÓA ĐƠN", width=200, height=42,
+                      fg_color=kho.MAU_LUC, hover_color=kho.MAU_LUC_DAM,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      command=self.app.mo_hop_nap).pack(side="right", padx=10)
+        ctk.CTkButton(t, text="Xóa điều kiện", width=140, height=42,
+                      fg_color="#6B7A8C",
+                      command=self.xoa_dieu_kien).pack(side="right")
+
+        _tkbase.Misc.bind_all(self, "<Return>", lambda e: self.tra_cuu()
+                      if self.winfo_ismapped() else None)
+
+    def _nhan(self, cha, r, c, chu):
+        ctk.CTkLabel(cha, text=chu, width=120, anchor="w",
+                     font=ctk.CTkFont(size=12),
+                     text_color=kho.MAU_CHU).grid(row=r, column=c, sticky="w",
+                                                  padx=(0, 6), pady=5)
+
+    def _o_nhap(self, cha, r, c, nhan, ma, goi_y="", luoi=None):
+        self._nhan(cha, r, c, nhan)
+        o = ctk.CTkEntry(cha, height=32, placeholder_text=goi_y,
+                         fg_color=kho.MAU_TRANG, border_color=kho.MAU_VIEN,
+                         text_color=kho.MAU_CHU)
+        o.grid(row=r, column=c + 1, sticky="ew", padx=(0, 16), pady=5)
+        self.o[ma] = o
+        return o
+
+    def _o_chon(self, cha, r, c, nhan, ma, ds):
+        self._nhan(cha, r, c, nhan)
+        bien = ctk.StringVar(value=ds[0])
+        ctk.CTkOptionMenu(cha, values=ds, variable=bien, height=32,
+                          fg_color=kho.MAU_TRANG, button_color=kho.MAU_XANH,
+                          button_hover_color=kho.MAU_XANH_DAM,
+                          text_color=kho.MAU_CHU,
+                          dropdown_fg_color=kho.MAU_TRANG,
+                          dropdown_text_color=kho.MAU_CHU
+                          ).grid(row=r, column=c + 1, sticky="ew",
+                                 padx=(0, 16), pady=5)
+        self.o[ma] = bien
+        return bien
+
+    def _o_ngay(self, cha, r, c, nhan, ma):
+        self._nhan(cha, r, c, nhan)
+        k = ctk.CTkFrame(cha, fg_color="transparent")
+        k.grid(row=r, column=c + 1, sticky="ew", padx=(0, 16), pady=5)
+        o = ctk.CTkEntry(k, height=32, placeholder_text="dd/mm/yyyy",
+                         fg_color=kho.MAU_TRANG, border_color=kho.MAU_VIEN,
+                         text_color=kho.MAU_CHU)
+        o.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(k, text="📅", width=36, height=32, fg_color=kho.MAU_XANH,
+                      command=lambda: LichChon(self.app, o)).pack(side="left",
+                                                                  padx=(4, 0))
+        self.o[ma] = o
+        return o
+
+    def _bat_nang_cao(self):
+        self.mo_nang_cao = not self.mo_nang_cao
+        if self.mo_nang_cao:
+            self.khung_nc.pack(fill="x", pady=(2, 0))
+            self.nut_nc.configure(text="▲  Thu gọn")
+        else:
+            self.khung_nc.pack_forget()
+            self.nut_nc.configure(text="▼  Nâng cao")
+
+    # ---------------- bang ket qua ----------------
+    def _dung_bang(self):
+        k = ctk.CTkFrame(self, fg_color=kho.MAU_TRANG, corner_radius=10,
+                         border_width=1, border_color=kho.MAU_VIEN)
+        k.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        thanh = ctk.CTkFrame(k, fg_color="transparent")
+        thanh.pack(fill="x", padx=12, pady=(10, 6))
+        self.nhan_kq = ctk.CTkLabel(thanh, text="KẾT QUẢ TRA CỨU",
+                                    font=ctk.CTkFont(size=13, weight="bold"),
+                                    text_color=kho.MAU_XANH_DAM)
+        self.nhan_kq.pack(side="left")
+        nut = [("Chọn tất cả", kho.MAU_XANH, self.chon_tat_ca),
+               ("Bỏ chọn", "#6B7A8C", self.bo_chon),
+               ("Làm mới", "#6B7A8C", lambda: self.tra_cuu(False)),
+               ("Tải XML", "#1E88E5", self.tai_xml),
+               ("Tải PDF", kho.MAU_CAM, self.tai_pdf),
+               ("Xuất Excel", kho.MAU_LUC, self.xuat_excel),
+               ("Xóa đã chọn", kho.MAU_DO, self.xoa_da_chon),
+               ("Xóa kết quả lọc", kho.MAU_DO_DAM, self.xoa_ket_qua_loc)]
+        for ten, mau, ham in reversed(nut):
+            ctk.CTkButton(thanh, text=ten, width=104, height=28, fg_color=mau,
+                          corner_radius=6, font=ctk.CTkFont(size=11,
+                                                            weight="bold"),
+                          command=ham).pack(side="right", padx=3)
+
+        khung = ctk.CTkFrame(k, fg_color=kho.MAU_TRANG)
+        khung.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        cols = [c[0] for c in kho.COT_BANG]
+        self.tv = ttk.Treeview(khung, columns=cols, show="headings",
+                               style="Invoice.Treeview", selectmode="extended")
+        for ma, nhan, rong, neo in kho.COT_BANG:
+            self.tv.heading(ma, text=nhan,
+                            command=(lambda m=ma: self.doi_sap_xep(m))
+                            if ma in kho.COT_SAP_XEP else None)
+            self.tv.column(ma, width=rong, anchor=neo,
+                           stretch=(ma == "ten_nguoi_ban"), minwidth=36)
+        self.tv.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(khung, orient="vertical", command=self.tv.yview)
+        self.tv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        sbx = ttk.Scrollbar(k, orient="horizontal", command=self.tv.xview)
+        self.tv.configure(xscrollcommand=sbx.set)
+        sbx.pack(fill="x", padx=12)
+
+        for ten, mau in kho.MAU_TRANG_THAI.items():
+            self.tv.tag_configure("tt_" + ten, foreground=mau)
+        self.tv.tag_configure("le", background="#F7FAFE")
+        self.tv.tag_configure("canh_bao", background="#FFF8E1")
+
+        self.tv.bind("<Button-1>", self.bam_chuot)
+        self.tv.bind("<Double-1>", self.bam_doi)
+        self.tv.bind("<Button-3>", self.menu_chuot)
+        self.tv.bind("<Delete>", lambda e: self.xoa_da_chon())
+
+        duoi = ctk.CTkFrame(k, fg_color="transparent")
+        duoi.pack(fill="x", padx=12, pady=(4, 10))
+        self.nhan_trang = ctk.CTkLabel(duoi, text="", font=ctk.CTkFont(size=12),
+                                       text_color=kho.MAU_XAM)
+        self.nhan_trang.pack(side="left")
+        ctk.CTkLabel(duoi, text="Số bản ghi/trang:", font=ctk.CTkFont(size=12),
+                     text_color=kho.MAU_XAM).pack(side="right", padx=(8, 4))
+        self.bien_trang = ctk.StringVar(
+            value=str(self.app.cau_hinh.get("so_ban_ghi_moi_trang", "50")))
+        ctk.CTkOptionMenu(duoi, values=kho.DS_SO_DONG, variable=self.bien_trang,
+                          width=90, height=28, fg_color=kho.MAU_TRANG,
+                          button_color=kho.MAU_XANH, text_color=kho.MAU_CHU,
+                          dropdown_fg_color=kho.MAU_TRANG,
+                          dropdown_text_color=kho.MAU_CHU,
+                          command=lambda v: self.ve_bang(1)).pack(side="right")
+        ctk.CTkButton(duoi, text="▶", width=34, height=28, fg_color=kho.MAU_XANH,
+                      command=lambda: self.ve_bang(self.trang + 1)
+                      ).pack(side="right", padx=(4, 16))
+        self.nhan_so_trang = ctk.CTkLabel(duoi, text="1", width=40,
+                                          font=ctk.CTkFont(size=12,
+                                                           weight="bold"),
+                                          text_color=kho.MAU_XANH_DAM)
+        self.nhan_so_trang.pack(side="right")
+        ctk.CTkButton(duoi, text="◀", width=34, height=28, fg_color=kho.MAU_XANH,
+                      command=lambda: self.ve_bang(self.trang - 1)
+                      ).pack(side="right", padx=4)
+
+    # ---------------- the duoi cung ----------------
+    def _dung_the_duoi(self):
+        k = ctk.CTkFrame(self, fg_color="transparent", height=118)
+        k.pack(fill="x", padx=16, pady=(0, 10))
+        k.grid_columnconfigure((0, 1, 2), weight=1, uniform="t")
+
+        t1 = self._the(k, 0, "THƯ MỤC LƯU TRỮ")
+        d = ctk.CTkFrame(t1, fg_color="transparent")
+        d.pack(fill="x", padx=12, pady=(2, 10))
+        self.o_thu_muc = ctk.CTkEntry(d, height=30, fg_color=kho.MAU_TRANG,
+                                      border_color=kho.MAU_VIEN,
+                                      text_color=kho.MAU_CHU)
+        self.o_thu_muc.insert(0, self.app.cau_hinh.get("thu_muc_luu_tru", ""))
+        self.o_thu_muc.pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(d, text="Chọn", width=60, height=30, fg_color=kho.MAU_XANH,
+                      command=self.chon_thu_muc).pack(side="left", padx=4)
+        ctk.CTkButton(d, text="Mở", width=46, height=30, fg_color="#6B7A8C",
+                      command=lambda: exporter.mo_duong_dan(
+                          self.o_thu_muc.get())).pack(side="left")
+
+        t2 = self._the(k, 1, "THÔNG TIN HỆ THỐNG")
+        self.nhan_ht = ctk.CTkLabel(t2, text="", anchor="w", justify="left",
+                                    font=ctk.CTkFont(size=12),
+                                    text_color=kho.MAU_CHU)
+        self.nhan_ht.pack(fill="x", padx=12, pady=(2, 10))
+
+        t3 = self._the(k, 2, "THỐNG KÊ")
+        self.nhan_tk = ctk.CTkLabel(t3, text="", anchor="w", justify="left",
+                                    font=ctk.CTkFont(size=12),
+                                    text_color=kho.MAU_CHU)
+        self.nhan_tk.pack(fill="x", padx=12, pady=(2, 10))
+
+    def _the(self, cha, cot, tieu_de):
+        k = ctk.CTkFrame(cha, fg_color=kho.MAU_TRANG, corner_radius=10,
+                         border_width=1, border_color=kho.MAU_VIEN)
+        k.grid(row=0, column=cot, sticky="nsew", padx=(0 if cot == 0 else 8, 0))
+        ctk.CTkLabel(k, text=tieu_de, font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=kho.MAU_XANH_DAM).pack(anchor="w", padx=12,
+                                                       pady=(8, 0))
+        return k
+
+    # ---------------- lay dieu kien ----------------
+    def lay_dieu_kien(self):
+        dk = {}
+        for ma, w in self.o.items():
+            gt = w.get().strip() if hasattr(w, "get") else ""
+            if not gt or gt == "Tất cả":
+                continue
+            if ma in ("tu_ngay", "den_ngay"):
+                d = kho.parse_ngay(gt)
+                if d:
+                    dk[ma] = d
+            elif ma in ("tong_tu", "tong_den"):
+                dk[ma] = kho.to_int(gt)
+            else:
+                dk[ma] = gt
+        return dk
+
+    def mo_ta_dieu_kien(self, dk):
+        if not dk:
+            return "Toàn bộ hóa đơn trong kho"
+        ten = {"mst_nguoi_mua": "MST mua", "cccd_nguoi_mua": "CCCD mua",
+               "ky_hieu_hoa_don": "Ký hiệu", "trang_thai": "Trạng thái",
+               "tu_ngay": "Từ ngày", "den_ngay": "Đến ngày",
+               "so_hoa_don": "Số HĐ", "ky_hieu_mau_so": "Mẫu số",
+               "loai_hoa_don": "Loại", "ten_nguoi_ban": "Tên bán",
+               "mst_nguoi_ban": "MST bán", "tu_khoa": "Từ khóa",
+               "tong_tu": "Tổng từ", "tong_den": "Tổng đến"}
+        p = []
+        for k, v in dk.items():
+            if k in ("tu_ngay", "den_ngay"):
+                v = kho.fmt_ngay(v)
+            elif k in ("tong_tu", "tong_den"):
+                v = kho.fmt_tien(v)
+            p.append("%s: %s" % (ten.get(k, k), v))
+        return "   •   ".join(p)
+
+    def xoa_dieu_kien(self):
+        for ma, w in self.o.items():
+            if isinstance(w, ctk.StringVar):
+                w.set("Tất cả")
+            else:
+                w.delete(0, "end")
+        self.tra_cuu()
+
+    def ap_dung_dieu_kien(self, dk):
+        for ma, w in self.o.items():
+            gt = dk.get(ma, "")
+            if isinstance(w, ctk.StringVar):
+                w.set(gt if gt else "Tất cả")
+            else:
+                w.delete(0, "end")
+                if gt:
+                    w.insert(0, kho.fmt_ngay(gt)
+                             if ma in ("tu_ngay", "den_ngay") else str(gt))
+        if dk.get("ten_nguoi_ban") or dk.get("mst_nguoi_ban") \
+                or dk.get("tu_khoa") or dk.get("tong_tu") or dk.get("tong_den"):
+            if not self.mo_nang_cao:
+                self._bat_nang_cao()
+        self.tra_cuu(ghi_lich_su=False)
+
+    # ---------------- tra cuu / ve bang ----------------
+    def tra_cuu(self, ghi_lich_su=True):
+        self.dieu_kien = self.lay_dieu_kien()
+        try:
+            self.ds_hien = kho.lay_danh_sach(self.dieu_kien, self.sap_xep,
+                                             self.giam)
+        except Exception as e:                   # noqa: BLE001
+            log.error("Lỗi tra cứu: %s", e)
+            self.app.bao("Không tra cứu được: %s" % e)
+            return
+        self.da_chon.clear()
+        if ghi_lich_su:
+            kho.ghi_lich_su(self.mo_ta_dieu_kien(self.dieu_kien),
+                            self.dieu_kien, len(self.ds_hien))
+        self.ve_bang(1)
+        self.cap_nhat_the()
+
+    def lam_moi(self):
+        self.tra_cuu(ghi_lich_su=False)
+
+    def _so_dong_trang(self):
+        v = self.bien_trang.get()
+        return 10 ** 9 if v == "Tất cả" else max(1, kho.to_int(v, 50))
+
+    def ve_bang(self, trang=None):
+        n = self._so_dong_trang()
+        tong = len(self.ds_hien)
+        so_trang = max(1, (tong + n - 1) // n)
+        self.trang = min(max(1, trang or self.trang), so_trang)
+        d1 = (self.trang - 1) * n
+        phan = self.ds_hien[d1:d1 + n]
+
+        for i in self.tv.get_children():
+            self.tv.delete(i)
+        for i, inv in enumerate(phan):
+            kh = inv["khoa"]
+            tt = inv.get("trang_thai") or "Hợp lệ"
+            tags = ["tt_" + tt] if tt in kho.MAU_TRANG_THAI else []
+            if i % 2:
+                tags.append("le")
+            if inv.get("canh_bao"):
+                tags.append("canh_bao")
+            self.tv.insert("", "end", iid=kh, tags=tuple(tags), values=(
+                "☑" if kh in self.da_chon else "☐",
+                d1 + i + 1,
+                kho.fmt_ngay(inv.get("ngay_lap")),
+                inv.get("so_hoa_don"),
+                inv.get("ky_hieu_mau_so"),
+                inv.get("ky_hieu_hoa_don"),
+                inv.get("mst_nguoi_ban"),
+                inv.get("ten_nguoi_ban"),
+                kho.fmt_tien(inv.get("tien_hang")),
+                kho.fmt_tien(inv.get("thue_gtgt")),
+                kho.fmt_tien(inv.get("tong_tien")),
+                tt,
+                kho.THAO_TAC_TEXT))
+        self.nhan_kq.configure(
+            text="KẾT QUẢ TRA CỨU  (%d hóa đơn%s)"
+                 % (tong, "  —  đã chọn %d" % len(self.da_chon)
+                    if self.da_chon else ""))
+        self.nhan_trang.configure(
+            text="Hiển thị %d - %d của %d bản ghi"
+                 % ((d1 + 1) if phan else 0, d1 + len(phan), tong))
+        self.nhan_so_trang.configure(text="%d/%d" % (self.trang, so_trang))
+
+    def doi_sap_xep(self, cot):
+        if self.sap_xep == cot:
+            self.giam = not self.giam
+        else:
+            self.sap_xep, self.giam = cot, True
+        self.ds_hien = kho.lay_danh_sach(self.dieu_kien, self.sap_xep, self.giam)
+        self.ve_bang(1)
+
+    def cap_nhat_the(self):
+        tk_ = kho.thong_ke()
+        self.nhan_ht.configure(
+            text="Trạng thái:  Đang đọc dữ liệu trên máy\n"
+                 "Hóa đơn trong kho:  %d\nThời gian:  %s"
+                 % (tk_["tong"], datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
+        loc = kho.thong_ke(self.dieu_kien)
+        self.nhan_tk.configure(
+            text="Kết quả lọc:  %d hóa đơn\nĐã tải XML:  %d   •   Chưa tải:  %d\n"
+                 "Tổng thanh toán:  %s"
+                 % (loc["tong"], loc["da_tai"], loc["chua_tai"],
+                    kho.fmt_tien(loc["tong_tien"])))
+
+    # ---------------- tuong tac chuot ----------------
+    def bam_chuot(self, e):
+        if self.tv.identify("region", e.x, e.y) != "cell":
+            return None
+        kh = self.tv.identify_row(e.y)
+        cot = self.tv.identify_column(e.x)
+        if not kh:
+            return None
+        chi_so = int(cot.replace("#", "")) - 1
+        ma_cot = kho.COT_BANG[chi_so][0] if 0 <= chi_so < len(kho.COT_BANG) else ""
+        if ma_cot == "sel":
+            self.dao_chon(kh)
+            return "break"
+        if ma_cot == "thao_tac":
+            x0 = self.tv.bbox(kh, cot)
+            if x0:
+                phan = (e.x - x0[0]) / max(1, x0[2])
+                i = min(len(kho.THAO_TAC_NHAN) - 1,
+                        int(phan * len(kho.THAO_TAC_NHAN)))
+                ten = kho.THAO_TAC_NHAN[i]
+                if ten == "XEM":
+                    self.xem(kh)
+                elif ten == "XML":
+                    self.mo_xml(kh)
+                elif ten == "IN":
+                    self.in_html(kh)
+                else:
+                    self.xoa_khoa([kh])
+            return "break"
+        return None
+
+    def bam_doi(self, e):
+        kh = self.tv.identify_row(e.y)
+        if kh:
+            self.xem(kh)
+        return "break"
+
+    def menu_chuot(self, e):
+        import tkinter as tk
+        kh = self.tv.identify_row(e.y)
+        if kh and kh not in self.tv.selection():
+            self.tv.selection_set(kh)
+        m = tk.Menu(self, tearoff=0)
+        m.add_command(label="Xem chi tiết hóa đơn",
+                      command=lambda: self.xem(kh))
+        m.add_command(label="Mở tệp XML gốc", command=lambda: self.mo_xml(kh))
+        m.add_command(label="In / Lưu PDF", command=lambda: self.in_html(kh))
+        m.add_separator()
+        m.add_command(label="Chọn / bỏ chọn dòng này",
+                      command=lambda: self.dao_chon(kh))
+        m.add_command(label="Chọn tất cả", command=self.chon_tat_ca)
+        m.add_command(label="Bỏ chọn", command=self.bo_chon)
+        m.add_separator()
+        m.add_command(label="Xóa hóa đơn này", command=lambda: self.xoa_khoa([kh]))
+        m.add_command(label="Xóa các dòng đã chọn (%d)" % len(self.da_chon),
+                      command=self.xoa_da_chon)
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def dao_chon(self, kh):
+        if kh in self.da_chon:
+            self.da_chon.discard(kh)
+            moi = "☐"
+        else:
+            self.da_chon.add(kh)
+            moi = "☑"
+        gt = list(self.tv.item(kh, "values"))
+        gt[0] = moi
+        self.tv.item(kh, values=gt)
+        self.nhan_kq.configure(
+            text="KẾT QUẢ TRA CỨU  (%d hóa đơn%s)"
+                 % (len(self.ds_hien), "  —  đã chọn %d" % len(self.da_chon)
+                    if self.da_chon else ""))
+
+    def chon_tat_ca(self):
+        for kh in self.tv.get_children():
+            self.da_chon.add(kh)
+        self.ve_bang(self.trang)
+
+    def bo_chon(self):
+        self.da_chon.clear()
+        self.ve_bang(self.trang)
+
+    # ---------------- hanh dong ----------------
+    def _inv(self, kh):
+        return kho.lay_chi_tiet(kh)
+
+    def ds_chon(self):
+        """Hoa don dang chon; neu khong chon gi thi lay dong dang to sang."""
+        kh = list(self.da_chon) or list(self.tv.selection())
+        return [x for x in (kho.lay_chi_tiet(k) for k in kh) if x]
+
+    def xem(self, kh):
+        inv = self._inv(kh)
+        if inv:
+            invoice_view.mo_cua_so(self.app, inv)
+
+    def mo_xml(self, kh):
+        inv = self._inv(kh)
+        d = (inv or {}).get("duong_dan_xml") or ""
+        if not exporter.mo_duong_dan(d):
+            self.app.bao("Không tìm thấy tệp XML gốc của hóa đơn này:\n%s"
+                         % (d or "(chưa có đường dẫn)"))
+
+    def in_html(self, kh):
+        inv = self._inv(kh)
+        if not inv:
+            return
+        import invoice_render
+        import tempfile
+        try:
+            d = os.path.join(tempfile.gettempdir(),
+                             invoice_render.ten_tep_html(inv))
+            invoice_render.luu_html(inv, duong_dan=d)
+        except OSError as e:
+            self.app.bao("Không tạo được bản thể hiện: %s" % e)
+            return
+        exporter.mo_duong_dan(d)
+        kho.cap_nhat_truong(kh, da_tai=1)
+
+    def tai_xml(self):
+        ds = self.ds_chon()
+        if not ds:
+            self.app.bao("Hãy chọn ít nhất một hóa đơn (ô vuông ở cột đầu).")
+            return
+        t = filedialog.askdirectory(title="Chọn thư mục lưu tệp XML")
+        if not t:
+            return
+        ok, thieu = exporter.chep_nhieu_xml(ds, t)
+        if self.app.cau_hinh.get("mo_sau_khi_xuat", True) and ok:
+            exporter.mo_duong_dan(t)
+        self.app.bao("Đã chép %d tệp XML vào:\n%s\n\n"
+                     "%d hóa đơn không có tệp XML gốc trên máy."
+                     % (len(ok), t, len(thieu)))
+
+    def tai_pdf(self):
+        ds = self.ds_chon()
+        if not ds:
+            self.app.bao("Hãy chọn ít nhất một hóa đơn (ô vuông ở cột đầu).")
+            return
+        t = filedialog.askdirectory(title="Chọn thư mục lưu bản thể hiện")
+        if not t:
+            return
+        kq = exporter.xuat_nhieu_html(ds, t)
+        for inv in ds:
+            kho.cap_nhat_truong(inv["khoa"], da_tai=1)
+        if self.app.cau_hinh.get("mo_sau_khi_xuat", True) and kq:
+            exporter.mo_duong_dan(t)
+        self.app.bao("Đã xuất %d bản thể hiện HTML vào:\n%s\n\n"
+                     "Mở tệp rồi nhấn Ctrl + P → chọn “Microsoft Print to PDF” "
+                     "để lưu thành PDF." % (len(kq), t))
+
+    def xuat_excel(self):
+        if not self.ds_hien:
+            self.app.bao("Chưa có kết quả nào để xuất.")
+            return
+        t = filedialog.asksaveasfilename(
+            title="Lưu bảng kê Excel", defaultextension=".xlsx",
+            filetypes=[("Bảng tính Excel", "*.xlsx")],
+            initialfile="BangKeHoaDon_%s.xlsx"
+                        % datetime.now().strftime("%Y%m%d_%H%M%S"),
+            initialdir=self.app.cau_hinh.get("thu_muc_xuat") or os.getcwd())
+        if not t:
+            return
+        try:
+            d = exporter.xuat_excel(
+                self.ds_hien, duong_dan=t,
+                tieu_de_bang="Điều kiện: %s — Kết xuất lúc %s"
+                             % (self.mo_ta_dieu_kien(self.dieu_kien),
+                                datetime.now().strftime("%d/%m/%Y %H:%M")))
+        except Exception as e:                   # noqa: BLE001
+            self.app.bao("Không xuất được Excel: %s" % e)
+            return
+        if self.app.cau_hinh.get("mo_sau_khi_xuat", True):
+            exporter.mo_duong_dan(d)
+        self.app.bao("Đã xuất %d dòng ra:\n%s" % (len(self.ds_hien), d))
+
+    # ---------------- xoa ----------------
+    def xoa_khoa(self, danh_sach_khoa):
+        ds = [x for x in (kho.lay_chi_tiet(k) for k in danh_sach_khoa) if x]
+        if not ds:
+            return
+        mo_ta = "\n".join(
+            "• %s  số %s  ngày %s  —  %s  —  %s"
+            % (i.get("ky_hieu_day_du"), i.get("so_hoa_don"),
+               kho.fmt_ngay(i.get("ngay_lap")), (i.get("ten_nguoi_ban") or "")[:38],
+               kho.fmt_tien(i.get("tong_tien"))) for i in ds[:40])
+        if len(ds) > 40:
+            mo_ta += "\n… và %d hóa đơn khác." % (len(ds) - 40)
+        if self.app.cau_hinh.get("xac_nhan_truoc_khi_xoa", True):
+            h = HopXacNhanXoa(self.app, len(ds), mo_ta)
+            self.app.wait_window(h)
+            if not h.ket_qua or not h.ket_qua[0]:
+                return
+            xoa_tep = h.ket_qua[1]
+        else:
+            xoa_tep = False
+        n, nt = kho.xoa([i["khoa"] for i in ds], xoa_tep)
+        self.da_chon.clear()
+        self.tra_cuu(ghi_lich_su=False)
+        self.app.bao("Đã xóa %d hóa đơn khỏi kho%s."
+                     % (n, " và %d tệp XML" % nt if nt else ""))
+
+    def xoa_da_chon(self):
+        kh = list(self.da_chon) or list(self.tv.selection())
+        if not kh:
+            self.app.bao("Chưa chọn hóa đơn nào để xóa.\n\n"
+                         "Hãy nhấp ô vuông ở cột đầu tiên, hoặc bấm [XÓA] "
+                         "ở cột Thao tác để xóa một dòng.")
+            return
+        self.xoa_khoa(kh)
+
+    def xoa_ket_qua_loc(self):
+        if not self.ds_hien:
+            self.app.bao("Không có kết quả nào đang hiển thị.")
+            return
+        self.xoa_khoa([i["khoa"] for i in self.ds_hien])
+
+    def chon_thu_muc(self):
+        t = filedialog.askdirectory(title="Chọn thư mục lưu trữ hóa đơn",
+                                    initialdir=self.o_thu_muc.get() or "/")
+        if not t:
+            return
+        t = os.path.normpath(t)
+        self.o_thu_muc.delete(0, "end")
+        self.o_thu_muc.insert(0, t)
+        self.app.cau_hinh["thu_muc_luu_tru"] = t
+        kho.ghi_cau_hinh(self.app.cau_hinh)
+
+
+# ======================================================================
+# Cua so chinh
+# ======================================================================
+class UngDung(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.cau_hinh = kho.doc_cau_hinh()
+        self.title("%s %s — %s" % (kho.APP_NAME, kho.APP_VERSION,
+                                   kho.OFFLINE_TEXT))
+        self.geometry("1280x800")
+        self.minsize(1100, 680)
+        self.configure(fg_color=kho.MAU_NEN)
+        self._kieu_bang()
+        self._thanh_tren()
+        than = ctk.CTkFrame(self, fg_color=kho.MAU_NEN)
+        than.pack(fill="both", expand=True)
+        self._cot_trai(than)
+        self.vung = ctk.CTkFrame(than, fg_color=kho.MAU_NEN)
+        self.vung.pack(side="left", fill="both", expand=True)
+        self._chan_trang()
+        self.man_hinh = {}
+        self.hien_tai = None
+        self.hien_man_hinh("tra_cuu")
+        self.protocol("WM_DELETE_WINDOW", self.dong)
+
+    # ---------------- kieu ----------------
+    def _kieu_bang(self):
+        s = ttk.Style()
+        try:
+            s.theme_use("clam")
+        except Exception:                        # noqa: BLE001
+            pass
+        s.configure("Invoice.Treeview", background=kho.MAU_TRANG,
+                    fieldbackground=kho.MAU_TRANG, foreground=kho.MAU_CHU,
+                    rowheight=27, borderwidth=0, font=("Segoe UI", 10))
+        s.configure("Invoice.Treeview.Heading", background=kho.MAU_XANH,
+                    foreground="#FFFFFF", relief="flat",
+                    font=("Segoe UI", 10, "bold"), padding=(2, 5))
+        s.map("Invoice.Treeview.Heading",
+              background=[("active", kho.MAU_XANH_DAM)])
+        s.map("Invoice.Treeview", background=[("selected", "#CFE3FA")],
+              foreground=[("selected", kho.MAU_CHU)])
+        s.configure("Xem.Treeview", background=kho.MAU_TRANG,
+                    fieldbackground=kho.MAU_TRANG, foreground=kho.MAU_CHU,
+                    rowheight=25, font=("Segoe UI", 10))
+        s.configure("Xem.Treeview.Heading", background="#E8F1FC",
+                    foreground=kho.MAU_XANH_DAM, relief="flat",
+                    font=("Segoe UI", 9, "bold"))
+
+    # ---------------- thanh tren ----------------
+    def _thanh_tren(self):
+        t = ctk.CTkFrame(self, fg_color=kho.MAU_XANH, corner_radius=0, height=56)
+        t.pack(fill="x")
+        t.pack_propagate(False)
+        ctk.CTkLabel(t, text="◆  " + kho.APP_NAME,
+                     font=ctk.CTkFont(size=19, weight="bold"),
+                     text_color="#FFFFFF").pack(side="left", padx=(16, 8))
+        ctk.CTkLabel(t, text=kho.APP_VERSION, fg_color="#0D47A1",
+                     corner_radius=10, width=52, height=22,
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="#FFFFFF").pack(side="left")
+        ctk.CTkLabel(t, text=kho.SLOGAN, font=ctk.CTkFont(size=12),
+                     text_color="#CFE3FA").pack(side="left", padx=14)
+        ctk.CTkButton(t, text="%s ▾" % self.cau_hinh.get("nguoi_dung",
+                                                         "Kế toán"),
+                      width=140, height=32, fg_color="#0D47A1",
+                      hover_color="#08306B", corner_radius=6,
+                      font=ctk.CTkFont(size=12),
+                      command=lambda: self.hien_man_hinh("lien_he")
+                      ).pack(side="right", padx=(6, 16))
+        ctk.CTkButton(t, text="Cài đặt", width=90, height=32,
+                      fg_color="#0D47A1", hover_color="#08306B",
+                      corner_radius=6, font=ctk.CTkFont(size=12),
+                      command=lambda: self.hien_man_hinh("thiet_lap")
+                      ).pack(side="right", padx=6)
+        ctk.CTkLabel(t, text="●  " + kho.OFFLINE_TEXT, fg_color="#0D47A1",
+                     corner_radius=16, height=30, width=390,
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color="#FFFFFF").pack(side="right", padx=10)
+
+    # ---------------- cot trai ----------------
+    def _cot_trai(self, cha):
+        c = ctk.CTkFrame(cha, fg_color=kho.MAU_XANH_DAM, corner_radius=0,
+                         width=200)
+        c.pack(side="left", fill="y")
+        c.pack_propagate(False)
+        self.nut_menu = {}
+        for ma, ten in kho.MENU_TRAI:
+            b = ctk.CTkButton(c, text=ten, anchor="w", height=42, width=200,
+                              corner_radius=0, fg_color="transparent",
+                              hover_color="#1565C0", text_color="#DCE9F8",
+                              font=ctk.CTkFont(size=13),
+                              command=lambda m=ma: self.hien_man_hinh(m))
+            b.pack(fill="x")
+            self.nut_menu[ma] = b
+        k = ctk.CTkFrame(c, fg_color="#1565C0", corner_radius=10)
+        k.pack(side="bottom", fill="x", padx=12, pady=16)
+        ctk.CTkLabel(k, text="HÓA ĐƠN\nĐIỆN TỬ",
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color="#FFFFFF").pack(pady=(12, 2))
+        ctk.CTkLabel(k, text="Đồng hành\ncùng kế toán Việt",
+                     font=ctk.CTkFont(size=11), text_color="#CFE3FA"
+                     ).pack(pady=(0, 12))
+
+    # ---------------- chan trang ----------------
+    def _chan_trang(self):
+        c = ctk.CTkFrame(self, fg_color=kho.MAU_TRANG, corner_radius=0,
+                         height=30, border_width=1, border_color=kho.MAU_VIEN)
+        c.pack(fill="x", side="bottom")
+        c.pack_propagate(False)
+        ctk.CTkLabel(c, text="Phần mềm hỗ trợ tra cứu và lưu trữ hóa đơn điện "
+                             "tử đã có trên máy — sử dụng cho mục đích công "
+                             "việc hợp pháp",
+                     font=ctk.CTkFont(size=11), text_color=kho.MAU_XAM
+                     ).pack(side="left", padx=14)
+        ctk.CTkLabel(c, text="Cập nhật: %s" % kho.NGAY_CAP_NHAT,
+                     font=ctk.CTkFont(size=11), text_color=kho.MAU_XAM
+                     ).pack(side="right", padx=14)
+        ctk.CTkLabel(c, text="Tác giả: %s    Điện thoại: %s"
+                     % (kho.TAC_GIA, kho.DIEN_THOAI),
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=kho.MAU_XANH_DAM).pack(side="right", padx=14)
+        ctk.CTkLabel(c, text="Phiên bản %s" % kho.APP_VERSION.lstrip("v"),
+                     font=ctk.CTkFont(size=11), text_color=kho.MAU_XAM
+                     ).pack(side="right", padx=14)
+
+    # ---------------- dieu huong ----------------
+    def hien_man_hinh(self, ma):
+        lop = {"trang_chu": man_hinh_phu.TrangChu,
+               "tra_cuu": ManHinhTraCuu,
+               "quan_ly_tep": man_hinh_phu.QuanLyTep,
+               "lich_su": man_hinh_phu.LichSu,
+               "thiet_lap": man_hinh_phu.ThietLap,
+               "huong_dan": man_hinh_phu.HuongDan,
+               "lien_he": man_hinh_phu.LienHe}.get(ma)
+        if lop is None:
+            return
+        if ma == "thiet_lap" and ma in self.man_hinh:
+            self.man_hinh[ma].destroy()
+            del self.man_hinh[ma]
+        if ma not in self.man_hinh:
+            self.man_hinh[ma] = lop(self.vung, self)
+        if self.hien_tai is not None:
+            self.hien_tai.pack_forget()
+        self.hien_tai = self.man_hinh[ma]
+        self.hien_tai.pack(fill="both", expand=True)
+        lam_moi = getattr(self.hien_tai, "lam_moi", None)
+        if callable(lam_moi) and ma != "tra_cuu":
+            lam_moi()
+        for m, b in self.nut_menu.items():
+            b.configure(fg_color=kho.MAU_XANH if m == ma else "transparent",
+                        text_color="#FFFFFF" if m == ma else "#DCE9F8",
+                        font=ctk.CTkFont(size=13,
+                                         weight="bold" if m == ma else "normal"))
+
+    def ap_dung_dieu_kien(self, dk):
+        self.hien_man_hinh("tra_cuu")
+        self.man_hinh["tra_cuu"].ap_dung_dieu_kien(dk or {})
+
+    def lam_moi_tat_ca(self):
+        for ma, mh in self.man_hinh.items():
+            f = getattr(mh, "lam_moi", None)
+            if callable(f):
+                try:
+                    f()
+                except Exception as e:           # noqa: BLE001
+                    log.warning("Lỗi làm mới %s: %s", ma, e)
+
+    # ---------------- hop thoai ----------------
+    def bao(self, noi_dung, tieu_de="Thông báo"):
+        h = HopThoai(self, tieu_de, noi_dung)
+        self.wait_window(h)
+
+    def hoi(self, noi_dung, tieu_de="Xác nhận"):
+        h = HopThoai(self, tieu_de, noi_dung, nut=("Hủy bỏ", "Đồng ý"))
+        self.wait_window(h)
+        return h.ket_qua == "Đồng ý"
+
+    # ---------------- nap du lieu ----------------
+    def mo_hop_nap(self):
+        h = HopChonNguon(self)
+        self.wait_window(h)
+        ma = h.ket_qua
+        if not ma:
+            return
+        bd = self.cau_hinh.get("thu_muc_nap_gan_nhat") or os.path.expanduser("~")
+        if ma == "zip":
+            d = filedialog.askopenfilename(
+                title="Chọn gói ZIP tải từ Cổng Thuế", initialdir=bd,
+                filetypes=[("Gói nén ZIP", "*.zip"), ("Tất cả", "*.*")])
+            if not d:
+                return
+            self._ghi_nho(os.path.dirname(d))
+            bc = importer.nap_zip(d)
+        elif ma == "tep":
+            ds = filedialog.askopenfilenames(
+                title="Chọn tệp XML hóa đơn", initialdir=bd,
+                filetypes=[("Tệp XML hóa đơn", "*.xml"), ("Tất cả", "*.*")])
+            if not ds:
+                return
+            self._ghi_nho(os.path.dirname(ds[0]))
+            bc = importer.nap_danh_sach_tep(list(ds), "Chọn từng tệp XML",
+                                            duong_dan=os.path.dirname(ds[0]))
+        else:
+            d = filedialog.askdirectory(title="Chọn thư mục chứa tệp XML",
+                                        initialdir=bd)
+            if not d:
+                return
+            self._ghi_nho(d)
+            bc = importer.nap_thu_muc(d, de_quy=(ma == "de_quy"))
+
+        tom = importer.tom_tat(bc)
+        ct = "\n".join(bc["chi_tiet"][:60])
+        if len(bc["chi_tiet"]) > 60:
+            ct += "\n… và %d dòng khác (xem mục Quản lý tệp đã tải)." \
+                  % (len(bc["chi_tiet"]) - 60)
+        h2 = HopThoai(self, "Kết quả nạp hóa đơn",
+                      tom + "\n\n" + ct, rong=720, cao=520,
+                      mau_chinh=kho.MAU_LUC if bc["them"] else kho.MAU_CAM)
+        self.wait_window(h2)
+
+        mh = self.man_hinh.get("tra_cuu")
+        if bc["them"] and mh is not None:
+            # bo moi dieu kien loc de hoa don vua nap chac chan hien ra
+            for _ma, w in mh.o.items():
+                if isinstance(w, ctk.StringVar):
+                    w.set("Tất cả")
+                else:
+                    w.delete(0, "end")
+        self.hien_man_hinh("tra_cuu")
+        self.man_hinh["tra_cuu"].tra_cuu(ghi_lich_su=False)
+        if bc["them"]:
+            self.man_hinh["tra_cuu"].da_chon = set(bc["khoa_moi"])
+            self.man_hinh["tra_cuu"].ve_bang(1)
+        self.lam_moi_tat_ca()
+
+    def _ghi_nho(self, thu_muc):
+        self.cau_hinh["thu_muc_nap_gan_nhat"] = thu_muc or ""
+        kho.ghi_cau_hinh(self.cau_hinh)
+
+    # ---------------- dong ----------------
+    def dong(self):
+        try:
+            mh = self.man_hinh.get("tra_cuu")
+            if mh is not None:
+                self.cau_hinh["so_ban_ghi_moi_trang"] = mh.bien_trang.get()
+                self.cau_hinh["thu_muc_luu_tru"] = mh.o_thu_muc.get().strip() \
+                    or self.cau_hinh.get("thu_muc_luu_tru")
+            kho.ghi_cau_hinh(self.cau_hinh)
+            kho.sao_luu("thoat")
+            kho.dong_ket_noi()
+            log.info("Đóng ứng dụng.")
+        except Exception as e:                   # noqa: BLE001
+            log.warning("Lỗi khi đóng: %s", e)
+        self.destroy()
+
+
+# ======================================================================
+def main():
+    try:
+        kho.khoi_tao()
+    except Exception as e:                       # noqa: BLE001
+        print("Không khởi tạo được cơ sở dữ liệu: %s" % e)
+        traceback.print_exc()
+        return 1
+    try:
+        UngDung().mainloop()
+    except Exception as e:                       # noqa: BLE001
+        log.error("Lỗi không mong muốn: %s\n%s", e, traceback.format_exc())
+        print("Đã xảy ra lỗi: %s\nXem chi tiết trong logs\\app.log" % e)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

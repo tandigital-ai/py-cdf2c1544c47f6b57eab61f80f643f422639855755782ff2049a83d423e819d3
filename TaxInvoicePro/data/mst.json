@@ -1,0 +1,14 @@
+{
+  "bat_tra_cuu_truc_tuyen": false,
+  "url_mau": "https://api.vietqr.io/v2/business/{mst}",
+  "url_du_phong": "",
+  "timeout": 12,
+  "so_luong": 3,
+  "do_tre_giay": 0.25,
+  "han_cache_ngay": 7,
+  "mst_don_vi": "",
+  "bat": true,
+  "so_ngay_cache": 7,
+  "do_tre": 0.6,
+  "thoi_gian_cho": 10.0
+}

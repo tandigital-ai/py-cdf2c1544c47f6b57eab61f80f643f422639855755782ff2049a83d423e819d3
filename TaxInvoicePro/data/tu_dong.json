@@ -1,0 +1,18 @@
+{
+  "bat_theo_doi": false,
+  "thu_muc": [
+    "C:\\Users\\AdminFz\\Downloads"
+  ],
+  "chu_ky_giay": 30,
+  "de_quy": true,
+  "so_ngay_gan_day": 30,
+  "imap": {
+    "may_chu": "imap.gmail.com",
+    "cong": 993,
+    "ssl": true,
+    "tai_khoan": "hoadon.tntt@gmail.com",
+    "hop_thu": "INBOX",
+    "so_ngay": 30,
+    "bat": false
+  }
+}
